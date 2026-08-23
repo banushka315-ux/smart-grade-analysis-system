@@ -1,0 +1,6 @@
+{
+  "name": "Smart Grade Analysis System",
+  "description": "University Result PDF grade analyzer with interactive dashboards, subject pass rates, grade distribution charts, top student rankings, and export reports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
