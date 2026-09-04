@@ -8,14 +8,14 @@ export interface OCRResult {
 }
 
 /**
- * Runs local Tesseract.js OCR on an image buffer (PNG, JPEG, WEBP, BMP).
+ * Runs Tesseract.js OCR on an image (Buffer, File, Blob, or base64 data URL).
  * Converts scanned visual text into machine-readable text.
  */
-export async function runTesseractOCR(imageBuffer: Buffer): Promise<OCRResult> {
+export async function runTesseractOCR(imageInput: any): Promise<OCRResult> {
   let worker: any = null;
   try {
     worker = await createWorker('eng');
-    const result = await worker.recognize(imageBuffer);
+    const result = await worker.recognize(imageInput);
     const extractedText = result?.data?.text || '';
     const confidence = result?.data?.confidence || 0;
 

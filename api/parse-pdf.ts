@@ -1,45 +1,46 @@
-import "dotenv/config";
-import express from "express";
-import path from "path";
-import { fileURLToPath } from "url";
 import { GoogleGenAI, Type } from "@google/genai";
 import * as pdfParseModule from "pdf-parse";
 const pdfParse: any = (pdfParseModule as any).default || pdfParseModule;
-import { createServer as createViteServer } from "vite";
-import { parseResultText } from "./src/lib/pdfParser.js";
-import { runTesseractOCR } from "./src/lib/ocrService.js";
+import { parseResultText } from "../src/lib/pdfParser";
+import { runTesseractOCR } from "../src/lib/ocrService";
 
-const app = express();
-export default app;
-const PORT = 3000;
-
-// Increase payload limit for PDF uploads
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ limit: "50mb", extended: true }));
-
-// Initialize Gemini Client
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      "User-Agent": "aistudio-build",
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: "10mb",
     },
   },
-});
+};
 
-// Health check route
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
-});
+export default async function handler(req: any, res: any) {
+  // CORS headers
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS,PATCH,DELETE,POST,PUT");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version"
+  );
 
-/**
- * POST /api/parse-pdf
- * Expects { base64Data: string, fileName?: string, mimeType?: string }
- * Seamlessly handles native text PDFs, scanned image PDFs, and direct result images via OCR.
- */
-app.post("/api/parse-pdf", async (req, res) => {
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method Not Allowed" });
+  }
+
   try {
-    const { base64Data, fileName, mimeType: incomingMime } = req.body;
+    let body = req.body;
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body);
+      } catch (e) {
+        // use raw body if parse fails
+      }
+    }
+
+    const { base64Data, fileName, mimeType: incomingMime } = body || {};
 
     if (!base64Data) {
       return res.status(400).json({ error: "Missing base64Data parameter." });
@@ -68,12 +69,10 @@ app.post("/api/parse-pdf", async (req, res) => {
         console.warn("pdf-parse extraction notice:", parseErr);
       }
 
-      // If PDF text is empty or under 80 chars, mark as scanned image-based PDF
       if (extractedText.trim().length < 80) {
         isScanned = true;
       }
     } else {
-      // Directly uploaded image file (PNG, JPG, WEBP scan)
       isScanned = true;
     }
 
@@ -82,9 +81,19 @@ app.post("/api/parse-pdf", async (req, res) => {
     let ocrAttempted = false;
     let ocrConfidence = 0;
 
-    // 1. Try Gemini Multimodal OCR / Document AI Engine
-    if (process.env.GEMINI_API_KEY) {
+    // 1. Try Gemini Multimodal OCR / Document AI Engine if API key present
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (apiKey) {
       try {
+        const ai = new GoogleGenAI({
+          apiKey,
+          httpOptions: {
+            headers: {
+              "User-Agent": "aistudio-build",
+            },
+          },
+        });
+
         ocrAttempted = isScanned;
         methodUsed = isScanned ? "gemini-ocr-multimodal" : "gemini-ai";
 
@@ -171,7 +180,7 @@ ${!isScanned && extractedText ? `Pre-extracted Text Context:\n${extractedText.sl
         const resultData = JSON.parse(jsonText);
 
         if (resultData.students && Array.isArray(resultData.students) && resultData.students.length > 0) {
-          return res.json({
+          return res.status(200).json({
             success: true,
             method: methodUsed,
             isScanned,
@@ -203,14 +212,11 @@ ${!isScanned && extractedText ? `Pre-extracted Text Context:\n${extractedText.sl
       } catch (ocrErr) {
         console.error("Tesseract.js OCR error:", ocrErr);
       }
-    } else if (isScanned && extractedText.trim().length > 0) {
-      parsedStudents = parseResultText(extractedText);
-    } else if (!isScanned) {
+    } else {
       parsedStudents = parseResultText(extractedText);
     }
 
     if (parsedStudents.length === 0) {
-      // Clear error handling for OCR / extraction failures
       return res.status(422).json({
         success: false,
         isScanned,
@@ -222,7 +228,7 @@ ${!isScanned && extractedText ? `Pre-extracted Text Context:\n${extractedText.sl
       });
     }
 
-    return res.json({
+    return res.status(200).json({
       success: true,
       method: methodUsed,
       isScanned,
@@ -236,30 +242,10 @@ ${!isScanned && extractedText ? `Pre-extracted Text Context:\n${extractedText.sl
       rawTextSnippet: extractedText.slice(0, 500),
     });
   } catch (error: any) {
-    console.error("PDF/OCR Processing Error:", error);
-    res.status(500).json({ error: error.message || "Failed to process document via OCR pipeline." });
-  }
-});
-
-async function startServer() {
-  // Vite middleware in dev mode
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*all", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+    console.error("PDF/OCR Serverless Processing Error:", error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to process document via serverless OCR pipeline.",
     });
   }
-
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
-  });
 }
-
-startServer();

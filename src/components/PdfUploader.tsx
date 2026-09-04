@@ -3,6 +3,8 @@ import { Upload, FileText, CheckCircle2, AlertTriangle, Sparkles, Download, Refr
 import { UniversityDataset } from '../types';
 import { SAMPLE_DATASETS } from '../data/sampleDatasets';
 import { generateSampleResultPDF } from '../lib/exportUtils';
+import { runTesseractOCR } from '../lib/ocrService';
+import { parseResultText } from '../lib/pdfParser';
 
 interface PdfUploaderProps {
   onDatasetLoaded: (dataset: UniversityDataset) => void;
@@ -40,6 +42,9 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({ onDatasetLoaded, allDa
         const base64Data = e.target?.result as string;
         setUploadStatus(isImage ? 'Processing scanned image with Optical Character Recognition (OCR)...' : 'Analyzing document layout & OCR engine...');
 
+        let apiSuccess = false;
+
+        // 1. Try Backend API first (/api/parse-pdf)
         try {
           const response = await fetch('/api/parse-pdf', {
             method: 'POST',
@@ -51,49 +56,111 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({ onDatasetLoaded, allDa
             })
           });
 
-          const data = await response.json();
+          const rawText = await response.text();
+          let data: any = null;
+          try {
+            data = JSON.parse(rawText);
+          } catch (_) {
+            // Response was non-JSON (e.g. 404 HTML error page from static host)
+          }
 
-          if (!response.ok || !data.success) {
+          if (response.ok && data && data.success && Array.isArray(data.students) && data.students.length > 0) {
+            apiSuccess = true;
             if (data.isScanned || data.ocrAttempted) {
               setIsOcrActive(true);
             }
-            throw new Error(data.error || 'Failed to extract result data from document.');
+            const methodLabel = data.method === 'gemini-ocr-multimodal'
+              ? 'Gemini Multimodal OCR Vision Engine'
+              : data.method === 'tesseract-ocr'
+              ? 'Tesseract.js OCR Engine'
+              : data.method === 'gemini-ai'
+              ? 'Gemini AI Parser'
+              : 'Regex Heuristic Parser';
+
+            setParseLog(`Extracted ${data.students.length} student records using ${methodLabel}.${data.isScanned ? ' (Scanned Document OCR)' : ''}`);
+
+            const newDataset: UniversityDataset = {
+              id: `pdf-${Date.now()}`,
+              title: `${file.name.replace(/\.[^/.]+$/, '')} Analysis`,
+              universityName: data.universityName || 'University Examination Gazette',
+              department: data.department || 'Department Result',
+              batch: data.batch || '2022-2026',
+              semester: data.semester || 'Semester VI',
+              academicYear: '2025-2026',
+              uploadDate: new Date().toISOString().split('T')[0],
+              students: data.students,
+              fileName: file.name
+            };
+
+            onDatasetLoaded(newDataset);
+            setUploadStatus(`Extraction Complete! Loaded ${data.students.length} students.`);
+            setLoading(false);
+            return;
           }
+        } catch (apiErr) {
+          console.warn('Backend API call notice:', apiErr);
+        }
 
-          if (data.isScanned || data.ocrAttempted) {
-            setIsOcrActive(true);
+        // 2. Client-Side Extraction Fallback (if backend API returned non-JSON/404 or failed)
+        if (!apiSuccess) {
+          try {
+            setUploadStatus(isImage ? 'Running Client-Side OCR Engine (Tesseract.js)...' : 'Extracting text and parsing result tables client-side...');
+            if (isImage) setIsOcrActive(true);
+
+            let extractedText = '';
+
+            if (isImage) {
+              const ocrRes = await runTesseractOCR(file);
+              if (ocrRes.success) {
+                extractedText = ocrRes.text;
+              }
+            } else {
+              // Extract text from PDF file or text representation
+              const textContent = await new Promise<string>((resolve) => {
+                const textReader = new FileReader();
+                textReader.onload = () => {
+                  const res = (textReader.result as string) || '';
+                  const cleanAscii = res.replace(/[^\x20-\x7E\n\r\t]/g, ' ');
+                  resolve(cleanAscii);
+                };
+                textReader.onerror = () => resolve('');
+                textReader.readAsText(file);
+              });
+              extractedText = textContent;
+            }
+
+            const parsedStudents = parseResultText(extractedText);
+
+            if (parsedStudents && parsedStudents.length > 0) {
+              setParseLog(`Extracted ${parsedStudents.length} student records using Client-Side ${isImage ? 'Tesseract OCR' : 'Text Engine'}.`);
+              const newDataset: UniversityDataset = {
+                id: `pdf-${Date.now()}`,
+                title: `${file.name.replace(/\.[^/.]+$/, '')} Analysis`,
+                universityName: 'University Examination Gazette',
+                department: 'Department Result',
+                batch: '2022-2026',
+                semester: 'Semester VI',
+                academicYear: '2025-2026',
+                uploadDate: new Date().toISOString().split('T')[0],
+                students: parsedStudents,
+                fileName: file.name
+              };
+
+              onDatasetLoaded(newDataset);
+              setUploadStatus(`Extraction Complete! Loaded ${parsedStudents.length} students.`);
+            } else {
+              setErrorMessage(
+                isImage
+                  ? 'Optical Character Recognition (OCR) could not find legible student result tables in this image. Please ensure the scan is clear and unblurred.'
+                  : 'Could not extract student records from document. Please verify that the PDF contains valid result tables.'
+              );
+            }
+          } catch (clientErr: any) {
+            console.error('Client-side parsing fallback error:', clientErr);
+            setErrorMessage('Failed to process document. Please ensure the file is a valid result PDF or scan.');
+          } finally {
+            setLoading(false);
           }
-
-          const methodLabel = data.method === 'gemini-ocr-multimodal'
-            ? 'Gemini Multimodal OCR Vision Engine'
-            : data.method === 'tesseract-ocr'
-            ? 'Tesseract.js OCR Engine'
-            : data.method === 'gemini-ai'
-            ? 'Gemini AI Parser'
-            : 'Regex Heuristic Parser';
-
-          setParseLog(`Extracted ${data.students?.length || 0} student records using ${methodLabel}. ${data.isScanned ? ' (Scanned Document OCR)' : ''}`);
-
-          const newDataset: UniversityDataset = {
-            id: `pdf-${Date.now()}`,
-            title: `${file.name.replace(/\.[^/.]+$/, '')} Analysis`,
-            universityName: data.universityName || 'University Examination Gazette',
-            department: data.department || 'Department Result',
-            batch: data.batch || '2022-2026',
-            semester: data.semester || 'Semester VI',
-            academicYear: '2025-2026',
-            uploadDate: new Date().toISOString().split('T')[0],
-            students: data.students || [],
-            fileName: file.name
-          };
-
-          onDatasetLoaded(newDataset);
-          setUploadStatus(`Extraction Complete! Loaded ${data.students.length} students.`);
-        } catch (apiErr: any) {
-          console.error('API parse error:', apiErr);
-          setErrorMessage(apiErr.message || 'Error processing PDF or scanned image on server.');
-        } finally {
-          setLoading(false);
         }
       };
 
