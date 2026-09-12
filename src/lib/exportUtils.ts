@@ -74,7 +74,7 @@ export function exportToCSV(dataset: UniversityDataset) {
   // Collect all unique subjects
   const subjectCodes: string[] = [];
   dataset.students.forEach(st => {
-    st.subjects.forEach(sub => {
+    st.subjects?.forEach(sub => {
       if (!subjectCodes.includes(sub.code)) subjectCodes.push(sub.code);
     });
   });

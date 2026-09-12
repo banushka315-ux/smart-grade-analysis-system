@@ -34,6 +34,7 @@ const GRADE_COLORS: Record<string, string> = {
   'C': '#EC4899',  // Pink
   'D': '#F97316',  // Orange
   'F': '#EF4444',  // Red
+  'ABS': '#EF4444', // Red
 };
 
 const ALL_GRADES_LIST = ['A+', 'A', 'B+', 'B', 'C+', 'C', 'D', 'F'];
