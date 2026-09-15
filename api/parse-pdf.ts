@@ -97,23 +97,24 @@ export default async function handler(req: any, res: any) {
         ocrAttempted = isScanned;
         methodUsed = isScanned ? "gemini-ocr-multimodal" : "gemini-ai";
 
-        const ocrPrompt = `You are an expert Optical Character Recognition (OCR) engine and University Result Gazette Parser.
-Your job is to extract the EXACT student result records printed in the document with 100% precision.
+        const ocrPrompt = `You are an expert Optical Character Recognition (OCR) engine and University Result Gazette / Marksheet Parser.
+Your job is to extract the EXACT student result records printed in the document with 100% precision and zero omission.
 
 CRITICAL EXTRACTION RULES:
 1. Extract EVERY SINGLE student record listed in the document without omitting any student.
-2. "enrollment": Extract the exact Roll Number / Enrollment Number / ID printed (string).
-3. "name": Extract the exact Full Name of the student as printed on the gazette/mark sheet. DO NOT use generic placeholders like "Student 1".
-4. "cgpa": Extract the exact CGPA, SGPA, GPA, or SPI/CPI number (e.g. 8.41). If missing, calculate from grade points (O/A+=10, A=9, B+=8, B=7, C+=6, C=5, D=4, F/ABS=0).
-5. "result": Extract "PASS" or "FAIL" based on status.
-6. "subjects": Extract all subject grades awarded to the student:
-   - "code": Subject code (e.g. "CS301", "KCS601").
+2. "enrollment": Extract the exact Roll Number / Enrollment Number / Reg No / ID / Seat No printed as a string.
+3. "name": Extract the exact Full Name of the student as printed on the document. Do NOT invent generic placeholders like "Student 1" unless no name is printed.
+4. "cgpa": Extract the exact CGPA, SGPA, GPA, SPI/CPI, or overall percentage number (e.g. 8.41 or 84.5). If missing, calculate from grade points (O/A+=10, A=9, B+=8, B=7, C+=6, C=5, D=4, P=4, F/ABS=0).
+5. "sgpa": Extract the exact SGPA number. If missing, set equal to CGPA.
+6. "result": Extract "PASS" or "FAIL" based on status. If student has 'F' or 'ABS' or 'FAIL', mark as "FAIL".
+7. "subjects": Extract all subject grades awarded to the student:
+   - "code": Subject code (e.g. "CS301", "KCS601", "MATH101").
    - "name": Full subject title if printed. If subject title is omitted in table, use the subject code as the subject name.
    - "grade": Grade awarded ("O", "A+", "A", "B+", "B", "C+", "C", "D", "P", "F", "ABS").
 
-Extract overall gazette metadata:
-- "universityName": Printed University or Board Name.
-- "department": Branch or Department Name.
+Extract overall document metadata:
+- "universityName": Printed University, Board, Institute, or College Name.
+- "department": Branch or Department Name (e.g., Computer Science Engineering).
 - "batch": Academic Batch (e.g., 2022-2026).
 - "semester": Semester (e.g., Semester VI).
 ${!isScanned && extractedText ? `Pre-extracted Text Context:\n${extractedText.slice(0, 15000)}` : ""}
@@ -131,66 +132,97 @@ ${!isScanned && extractedText ? `Pre-extracted Text Context:\n${extractedText.sl
           },
         ];
 
-        const aiResponse = await ai.models.generateContent({
-          model: "gemini-2.5-flash",
-          contents: contents,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                universityName: { type: Type.STRING },
-                department: { type: Type.STRING },
-                batch: { type: Type.STRING },
-                semester: { type: Type.STRING },
-                students: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      enrollment: { type: Type.STRING },
-                      name: { type: Type.STRING },
-                      cgpa: { type: Type.NUMBER },
-                      result: { type: Type.STRING },
-                      subjects: {
-                        type: Type.ARRAY,
-                        items: {
-                          type: Type.OBJECT,
-                          properties: {
-                            code: { type: Type.STRING },
-                            name: { type: Type.STRING },
-                            grade: { type: Type.STRING },
+        let aiResponse: any = null;
+        try {
+          aiResponse = await ai.models.generateContent({
+            model: "gemini-2.0-flash",
+            contents: contents,
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  universityName: { type: Type.STRING },
+                  department: { type: Type.STRING },
+                  batch: { type: Type.STRING },
+                  semester: { type: Type.STRING },
+                  students: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        enrollment: { type: Type.STRING },
+                        name: { type: Type.STRING },
+                        cgpa: { type: Type.NUMBER },
+                        sgpa: { type: Type.NUMBER },
+                        result: { type: Type.STRING },
+                        subjects: {
+                          type: Type.ARRAY,
+                          items: {
+                            type: Type.OBJECT,
+                            properties: {
+                              code: { type: Type.STRING },
+                              name: { type: Type.STRING },
+                              grade: { type: Type.STRING },
+                            },
+                            required: ["code", "name", "grade"],
                           },
-                          required: ["code", "name", "grade"],
                         },
                       },
+                      required: ["enrollment", "name", "cgpa", "result", "subjects"],
                     },
-                    required: ["enrollment", "name", "cgpa", "result", "subjects"],
                   },
                 },
+                required: ["students"],
               },
-              required: ["students"],
             },
-          },
-        });
+          });
+        } catch (primaryErr) {
+          console.warn("gemini-2.0-flash attempt notice, trying gemini-1.5-flash fallback:", primaryErr);
+          aiResponse = await ai.models.generateContent({
+            model: "gemini-1.5-flash",
+            contents: contents,
+            config: {
+              responseMimeType: "application/json",
+            },
+          });
+        }
 
-        const jsonText = aiResponse.text?.trim() || "{}";
+        const jsonText = aiResponse?.text?.trim() || "{}";
         const resultData = JSON.parse(jsonText);
 
         if (resultData.students && Array.isArray(resultData.students) && resultData.students.length > 0) {
-          const sanitizedStudents = resultData.students.map((st: any) => ({
-            ...st,
-            enrollment: String(st.enrollment || '220100000').toUpperCase(),
-            name: st.name && !st.name.startsWith('Student ') ? st.name.trim() : `Student ${st.enrollment || ''}`,
-            cgpa: typeof st.cgpa === 'number' && !isNaN(st.cgpa) ? Number(st.cgpa.toFixed(2)) : 7.0,
-            sgpa: typeof st.cgpa === 'number' && !isNaN(st.cgpa) ? Number(st.cgpa.toFixed(2)) : 7.0,
-            result: st.result ? (String(st.result).toUpperCase().includes('FAIL') ? 'FAIL' : 'PASS') : 'PASS',
-            subjects: (st.subjects || []).map((s: any) => ({
-              code: String(s.code || 'SUB101').toUpperCase(),
-              name: String(s.name || s.code || 'Subject').trim(),
+          const sanitizedStudents = resultData.students.map((st: any, idx: number) => {
+            const enrollmentStr = String(st.enrollment || `REG${1000 + idx}`).trim().toUpperCase();
+            const nameStr = st.name && !st.name.startsWith('Student ')
+              ? st.name.trim()
+              : `Student (${enrollmentStr})`;
+            const calcCgpa = typeof st.cgpa === 'number' && !isNaN(st.cgpa)
+              ? Number(st.cgpa.toFixed(2))
+              : typeof st.sgpa === 'number' && !isNaN(st.sgpa)
+              ? Number(st.sgpa.toFixed(2))
+              : 7.0;
+
+            const subs = (st.subjects || []).map((s: any, sIdx: number) => ({
+              code: String(s.code || `SUB${sIdx + 1}`).toUpperCase(),
+              name: String(s.name || s.code || `Subject ${sIdx + 1}`).trim(),
               grade: String(s.grade || 'A').toUpperCase()
-            }))
-          }));
+            }));
+
+            const hasFailGrade = subs.some((s: any) => ['F', 'ABS', 'FAIL', 'AB'].includes(s.grade));
+            const resStatus = st.result
+              ? (String(st.result).toUpperCase().includes('FAIL') ? 'FAIL' : 'PASS')
+              : (hasFailGrade ? 'FAIL' : 'PASS');
+
+            return {
+              enrollment: enrollmentStr,
+              name: nameStr,
+              cgpa: calcCgpa,
+              sgpa: typeof st.sgpa === 'number' && !isNaN(st.sgpa) ? Number(st.sgpa.toFixed(2)) : calcCgpa,
+              result: resStatus,
+              subjects: subs
+            };
+          });
 
           return res.status(200).json({
             success: true,
