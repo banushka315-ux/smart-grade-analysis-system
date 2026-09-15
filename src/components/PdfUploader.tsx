@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { Upload, FileText, CheckCircle2, AlertTriangle, Sparkles, Download, RefreshCw, Cpu, Scan, Image } from 'lucide-react';
+import { Upload, FileText, CheckCircle2, AlertTriangle, Sparkles, Download, RefreshCw, Cpu, Scan, Table } from 'lucide-react';
 import { UniversityDataset } from '../types';
 import { SAMPLE_DATASETS } from '../data/sampleDatasets';
 import { generateSampleResultPDF } from '../lib/exportUtils';
 import { runTesseractOCR } from '../lib/ocrService';
 import { parseResultText } from '../lib/pdfParser';
+import { parseSpreadsheetData } from '../lib/fileParser';
 
 interface PdfUploaderProps {
   onDatasetLoaded: (dataset: UniversityDataset) => void;
@@ -22,11 +23,13 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({ onDatasetLoaded, allDa
   const handleFileUpload = async (file: File) => {
     if (!file) return;
 
-    const isPdf = file.type.includes('pdf') || file.name.toLowerCase().endsWith('.pdf');
-    const isImage = file.type.startsWith('image/') || /\.(png|jpe?g|webp|bmp)$/i.test(file.name);
+    const lowerName = file.name.toLowerCase();
+    const isSpreadsheet = lowerName.endsWith('.csv') || lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls') || file.type.includes('csv') || file.type.includes('spreadsheet') || file.type.includes('excel');
+    const isPdf = file.type.includes('pdf') || lowerName.endsWith('.pdf');
+    const isImage = file.type.startsWith('image/') || /\.(png|jpe?g|webp|bmp)$/i.test(lowerName);
 
-    if (!isPdf && !isImage) {
-      setErrorMessage('Please upload a valid PDF (.pdf) or scanned image (.png, .jpg, .webp).');
+    if (!isSpreadsheet && !isPdf && !isImage) {
+      setErrorMessage('Please upload a valid result document (.pdf, .csv, .xlsx, .xls) or scanned image (.png, .jpg, .webp).');
       return;
     }
 
@@ -34,17 +37,55 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({ onDatasetLoaded, allDa
     setErrorMessage(null);
     setIsOcrActive(false);
     setUploadStatus(`Reading file (${(file.size / 1024 / 1024).toFixed(2)} MB)...`);
+
+    // 1. Handle CSV / Excel Spreadsheet Uploads Directly
+    if (isSpreadsheet) {
+      setParseLog('Parsing spreadsheet table structure...');
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const parsed = parseSpreadsheetData(arrayBuffer);
+
+        if (parsed.students && parsed.students.length > 0) {
+          const newDataset: UniversityDataset = {
+            id: `spreadsheet-${Date.now()}`,
+            title: `${file.name.replace(/\.[^/.]+$/, '')} Analysis`,
+            universityName: parsed.universityName || 'Uploaded Result Dataset',
+            department: parsed.department || 'Academic Results',
+            batch: parsed.batch || '2022-2026',
+            semester: parsed.semester || 'Semester VI',
+            academicYear: '2025-2026',
+            uploadDate: new Date().toISOString().split('T')[0],
+            students: parsed.students,
+            fileName: file.name
+          };
+
+          setParseLog(`Successfully extracted ${parsed.students.length} student records from spreadsheet.`);
+          onDatasetLoaded(newDataset);
+          setUploadStatus(`Extraction Complete! Loaded ${parsed.students.length} students.`);
+        } else {
+          setErrorMessage('Could not extract valid student result records from spreadsheet. Please ensure columns include Roll/Enrollment No, Name, and Subject/Grade fields.');
+        }
+      } catch (err: any) {
+        console.error('Spreadsheet parse error:', err);
+        setErrorMessage('Failed to parse spreadsheet file. Please verify file format.');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    // 2. Handle PDF & Scanned Image Uploads
     setParseLog('Initializing PDF & OCR extraction pipeline...');
 
     try {
       const reader = new FileReader();
       reader.onload = async (e) => {
         const base64Data = e.target?.result as string;
-        setUploadStatus(isImage ? 'Processing scanned image with Optical Character Recognition (OCR)...' : 'Analyzing document layout & OCR engine...');
+        setUploadStatus(isImage ? 'Processing scanned image with Optical Character Recognition (OCR)...' : 'Analyzing document layout & AI OCR engine...');
 
         let apiSuccess = false;
 
-        // 1. Try Backend API first (/api/parse-pdf)
+        // Try Backend API first (/api/parse-pdf)
         try {
           const response = await fetch('/api/parse-pdf', {
             method: 'POST',
@@ -60,9 +101,7 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({ onDatasetLoaded, allDa
           let data: any = null;
           try {
             data = JSON.parse(rawText);
-          } catch (_) {
-            // Response was non-JSON (e.g. 404 HTML error page from static host)
-          }
+          } catch (_) {}
 
           if (response.ok && data && data.success && Array.isArray(data.students) && data.students.length > 0) {
             apiSuccess = true;
@@ -96,72 +135,56 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({ onDatasetLoaded, allDa
             setUploadStatus(`Extraction Complete! Loaded ${data.students.length} students.`);
             setLoading(false);
             return;
+          } else if (data && data.error) {
+            setErrorMessage(data.error);
+            setLoading(false);
+            return;
           }
         } catch (apiErr) {
           console.warn('Backend API call notice:', apiErr);
         }
 
-        // 2. Client-Side Extraction Fallback (if backend API returned non-JSON/404 or failed)
-        if (!apiSuccess) {
+        // Client-Side OCR Fallback for images
+        if (!apiSuccess && isImage) {
           try {
-            setUploadStatus(isImage ? 'Running Client-Side OCR Engine (Tesseract.js)...' : 'Extracting text and parsing result tables client-side...');
-            if (isImage) setIsOcrActive(true);
+            setUploadStatus('Running Client-Side OCR Engine (Tesseract.js)...');
+            setIsOcrActive(true);
 
-            let extractedText = '';
-
-            if (isImage) {
-              const ocrRes = await runTesseractOCR(file);
-              if (ocrRes.success) {
-                extractedText = ocrRes.text;
-              }
-            } else {
-              // Extract text from PDF file or text representation
-              const textContent = await new Promise<string>((resolve) => {
-                const textReader = new FileReader();
-                textReader.onload = () => {
-                  const res = (textReader.result as string) || '';
-                  const cleanAscii = res.replace(/[^\x20-\x7E\n\r\t]/g, ' ');
-                  resolve(cleanAscii);
+            const ocrRes = await runTesseractOCR(file);
+            if (ocrRes.success && ocrRes.text) {
+              const parsedStudents = parseResultText(ocrRes.text);
+              if (parsedStudents && parsedStudents.length > 0) {
+                setParseLog(`Extracted ${parsedStudents.length} student records using Tesseract OCR.`);
+                const newDataset: UniversityDataset = {
+                  id: `image-${Date.now()}`,
+                  title: `${file.name.replace(/\.[^/.]+$/, '')} Analysis`,
+                  universityName: 'Scanned Result Gazette',
+                  department: 'Department Result',
+                  batch: '2022-2026',
+                  semester: 'Semester VI',
+                  academicYear: '2025-2026',
+                  uploadDate: new Date().toISOString().split('T')[0],
+                  students: parsedStudents,
+                  fileName: file.name
                 };
-                textReader.onerror = () => resolve('');
-                textReader.readAsText(file);
-              });
-              extractedText = textContent;
-            }
 
-            const parsedStudents = parseResultText(extractedText);
-
-            if (parsedStudents && parsedStudents.length > 0) {
-              setParseLog(`Extracted ${parsedStudents.length} student records using Client-Side ${isImage ? 'Tesseract OCR' : 'Text Engine'}.`);
-              const newDataset: UniversityDataset = {
-                id: `pdf-${Date.now()}`,
-                title: `${file.name.replace(/\.[^/.]+$/, '')} Analysis`,
-                universityName: 'University Examination Gazette',
-                department: 'Department Result',
-                batch: '2022-2026',
-                semester: 'Semester VI',
-                academicYear: '2025-2026',
-                uploadDate: new Date().toISOString().split('T')[0],
-                students: parsedStudents,
-                fileName: file.name
-              };
-
-              onDatasetLoaded(newDataset);
-              setUploadStatus(`Extraction Complete! Loaded ${parsedStudents.length} students.`);
-            } else {
-              setErrorMessage(
-                isImage
-                  ? 'Optical Character Recognition (OCR) could not find legible student result tables in this image. Please ensure the scan is clear and unblurred.'
-                  : 'Could not extract student records from document. Please verify that the PDF contains valid result tables.'
-              );
+                onDatasetLoaded(newDataset);
+                setUploadStatus(`Extraction Complete! Loaded ${parsedStudents.length} students.`);
+                setLoading(false);
+                return;
+              }
             }
           } catch (clientErr: any) {
-            console.error('Client-side parsing fallback error:', clientErr);
-            setErrorMessage('Failed to process document. Please ensure the file is a valid result PDF or scan.');
-          } finally {
-            setLoading(false);
+            console.error('Client OCR error:', clientErr);
           }
         }
+
+        setErrorMessage(
+          isImage
+            ? 'Optical Character Recognition (OCR) could not detect legible student result tables in this image. Please ensure the scan is clear and unblurred.'
+            : 'Could not extract student records from document. Please verify that the PDF contains valid result tables.'
+        );
+        setLoading(false);
       };
 
       reader.readAsDataURL(file);
@@ -202,14 +225,14 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({ onDatasetLoaded, allDa
 
           <div>
             <div className="flex items-center justify-center gap-2 mb-1">
-              <h2 className="text-xl font-bold text-slate-100">Upload University Result PDF or Scan</h2>
+              <h2 className="text-xl font-bold text-slate-100">Upload University Result PDF, CSV, Excel, or Scan</h2>
               <span className="px-2.5 py-0.5 text-[10px] font-extrabold bg-indigo-500/20 text-indigo-300 rounded-full border border-indigo-500/30 flex items-center gap-1">
-                <Scan className="w-3 h-3 text-indigo-400" /> OCR Pipeline Integrated
+                <Scan className="w-3 h-3 text-indigo-400" /> OCR & Spreadsheet Engine
               </span>
             </div>
             <p className="text-xs text-slate-400">
-              Supports native text PDFs, scanned image PDFs, and direct result images (.png, .jpg, .webp).
-              Optical Character Recognition (OCR) converts image scans into structured student records automatically.
+              Supports native text PDFs, scanned image PDFs, direct result images (.png, .jpg, .webp), and spreadsheets (.csv, .xlsx, .xls).
+              The uploaded file is parsed as the single source of truth for all student analytics.
             </p>
           </div>
 
@@ -217,10 +240,10 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({ onDatasetLoaded, allDa
           <div className="pt-2 flex flex-wrap items-center justify-center gap-3">
             <label className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl shadow-md shadow-indigo-600/20 cursor-pointer transition-all inline-flex items-center gap-2">
               <FileText className="w-4 h-4" />
-              <span>Select PDF or Image Scan</span>
+              <span>Select File (PDF, CSV, Excel, Image)</span>
               <input
                 type="file"
-                accept=".pdf,application/pdf,image/png,image/jpeg,image/webp,image/bmp"
+                accept=".pdf,application/pdf,.csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,image/png,image/jpeg,image/webp,image/bmp"
                 className="hidden"
                 onChange={(e) => {
                   if (e.target.files && e.target.files[0]) {

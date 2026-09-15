@@ -190,14 +190,15 @@ function finalizeStudent(st: Partial<StudentResult>): StudentResult {
       const pointsMap: Record<string, number> = { 'O': 10, 'A+': 10, 'A': 9, 'B+': 8, 'B': 7, 'C+': 6, 'C': 5, 'D': 4, 'P': 4, 'F': 0, 'ABS': 0 };
       const totalPoints = subjects.reduce((acc, s) => acc + (pointsMap[s.grade] ?? 6), 0);
       cgpa = Number((totalPoints / subjects.length).toFixed(2));
-    } else {
-      cgpa = 7.0;
     }
   }
 
+  const enrollment = st.enrollment || 'STUDENT';
+  const name = st.name || `Student (${enrollment})`;
+
   return {
-    enrollment: st.enrollment || "220100000",
-    name: st.name || `Student ${st.enrollment || 'Record'}`,
+    enrollment: enrollment.toUpperCase(),
+    name,
     cgpa: Number(cgpa.toFixed(2)),
     sgpa: Number(cgpa.toFixed(2)),
     result,
