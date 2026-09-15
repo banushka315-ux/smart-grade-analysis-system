@@ -3,8 +3,15 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenAI, Type } from "@google/genai";
-import * as pdfParseModule from "pdf-parse";
-const pdfParse: any = (pdfParseModule as any).default || pdfParseModule;
+import pdfParse from "pdf-parse";
+const parsePdfBuffer = async (buffer: Buffer) => {
+  const fn: any = typeof pdfParse === 'function' ? pdfParse : (pdfParse as any).default;
+  if (typeof fn === 'function') {
+    return await fn(buffer);
+  }
+  throw new Error("pdf-parse is not executable");
+};
+
 import { createServer as createViteServer } from "vite";
 import { parseResultText } from "./src/lib/pdfParser.js";
 import { runTesseractOCR } from "./src/lib/ocrService.js";
@@ -62,7 +69,7 @@ app.post("/api/parse-pdf", async (req, res) => {
 
     if (mimeType === "application/pdf") {
       try {
-        const pdfData = await pdfParse(fileBuffer);
+        const pdfData = await parsePdfBuffer(fileBuffer);
         extractedText = pdfData.text || "";
       } catch (parseErr) {
         console.warn("pdf-parse extraction notice:", parseErr);
@@ -82,13 +89,13 @@ app.post("/api/parse-pdf", async (req, res) => {
     let ocrAttempted = false;
     let ocrConfidence = 0;
 
-        // 1. Try Gemini Multimodal OCR / Document AI Engine
-        if (process.env.GEMINI_API_KEY) {
-          try {
-            ocrAttempted = isScanned;
-            methodUsed = isScanned ? "gemini-ocr-multimodal" : "gemini-ai";
+    // 1. Try Gemini Multimodal OCR / Document AI Engine
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        ocrAttempted = isScanned;
+        methodUsed = isScanned ? "gemini-ocr-multimodal" : "gemini-ai";
 
-            const ocrPrompt = `You are an expert Optical Character Recognition (OCR) engine and University Result Gazette / Marksheet Parser.
+        const ocrPrompt = `You are an expert Optical Character Recognition (OCR) engine and University Result Gazette / Marksheet Parser.
 Your job is to extract the EXACT student result records printed in the document with 100% precision and zero omission.
 
 CRITICAL EXTRACTION RULES:
@@ -111,74 +118,73 @@ Extract overall document metadata:
 ${!isScanned && extractedText ? `Pre-extracted Text Context:\n${extractedText.slice(0, 15000)}` : ""}
 `;
 
-            const contents: any[] = [
-              {
-                inlineData: {
-                  mimeType: mimeType,
-                  data: cleanBase64,
-                },
-              },
-              {
-                text: ocrPrompt,
-              },
-            ];
+        const contents: any[] = [
+          {
+            inlineData: {
+              mimeType: mimeType,
+              data: cleanBase64,
+            },
+          },
+          {
+            text: ocrPrompt,
+          },
+        ];
 
-            // Primary model: gemini-2.0-flash with fallback to gemini-1.5-flash
-            let aiResponse: any = null;
-            try {
-              aiResponse = await ai.models.generateContent({
-                model: "gemini-2.0-flash",
-                contents: contents,
-                config: {
-                  responseMimeType: "application/json",
-                  responseSchema: {
-                    type: Type.OBJECT,
-                    properties: {
-                      universityName: { type: Type.STRING },
-                      department: { type: Type.STRING },
-                      batch: { type: Type.STRING },
-                      semester: { type: Type.STRING },
-                      students: {
-                        type: Type.ARRAY,
-                        items: {
-                          type: Type.OBJECT,
-                          properties: {
-                            enrollment: { type: Type.STRING },
-                            name: { type: Type.STRING },
-                            cgpa: { type: Type.NUMBER },
-                            sgpa: { type: Type.NUMBER },
-                            result: { type: Type.STRING },
-                            subjects: {
-                              type: Type.ARRAY,
-                              items: {
-                                type: Type.OBJECT,
-                                properties: {
-                                  code: { type: Type.STRING },
-                                  name: { type: Type.STRING },
-                                  grade: { type: Type.STRING },
-                                },
-                                required: ["code", "name", "grade"],
+        // Models to try in priority order
+        const modelsToTry = ["gemini-3.6-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
+        let aiResponse: any = null;
+
+        for (const modelName of modelsToTry) {
+          try {
+            aiResponse = await ai.models.generateContent({
+              model: modelName,
+              contents: contents,
+              config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                  type: Type.OBJECT,
+                  properties: {
+                    universityName: { type: Type.STRING },
+                    department: { type: Type.STRING },
+                    batch: { type: Type.STRING },
+                    semester: { type: Type.STRING },
+                    students: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          enrollment: { type: Type.STRING },
+                          name: { type: Type.STRING },
+                          cgpa: { type: Type.NUMBER },
+                          sgpa: { type: Type.NUMBER },
+                          result: { type: Type.STRING },
+                          subjects: {
+                            type: Type.ARRAY,
+                            items: {
+                              type: Type.OBJECT,
+                              properties: {
+                                code: { type: Type.STRING },
+                                name: { type: Type.STRING },
+                                grade: { type: Type.STRING },
                               },
+                              required: ["code", "name", "grade"],
                             },
                           },
-                          required: ["enrollment", "name", "cgpa", "result", "subjects"],
                         },
+                        required: ["enrollment", "name", "cgpa", "result", "subjects"],
                       },
                     },
-                    required: ["students"],
                   },
+                  required: ["students"],
                 },
-              });
-            } catch (primaryErr) {
-              console.warn("gemini-2.0-flash attempt notice, trying gemini-1.5-flash fallback:", primaryErr);
-              aiResponse = await ai.models.generateContent({
-                model: "gemini-1.5-flash",
-                contents: contents,
-                config: {
-                  responseMimeType: "application/json",
-                },
-              });
-            }
+              },
+            });
+
+            if (aiResponse && aiResponse.text) break;
+          } catch (mErr) {
+            console.warn(`Model ${modelName} attempt notice:`, mErr);
+          }
+        }
 
             const jsonText = aiResponse?.text?.trim() || "{}";
             const resultData = JSON.parse(jsonText);

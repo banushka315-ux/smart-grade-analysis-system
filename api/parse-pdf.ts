@@ -1,6 +1,13 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import * as pdfParseModule from "pdf-parse";
-const pdfParse: any = (pdfParseModule as any).default || pdfParseModule;
+import pdfParse from "pdf-parse";
+const parsePdfBuffer = async (buffer: Buffer) => {
+  const fn: any = typeof pdfParse === 'function' ? pdfParse : (pdfParse as any).default;
+  if (typeof fn === 'function') {
+    return await fn(buffer);
+  }
+  throw new Error("pdf-parse is not executable");
+};
+
 import { parseResultText } from "../src/lib/pdfParser";
 import { runTesseractOCR } from "../src/lib/ocrService";
 
@@ -63,7 +70,7 @@ export default async function handler(req: any, res: any) {
 
     if (mimeType === "application/pdf") {
       try {
-        const pdfData = await pdfParse(fileBuffer);
+        const pdfData = await parsePdfBuffer(fileBuffer);
         extractedText = pdfData.text || "";
       } catch (parseErr) {
         console.warn("pdf-parse extraction notice:", parseErr);
@@ -132,60 +139,59 @@ ${!isScanned && extractedText ? `Pre-extracted Text Context:\n${extractedText.sl
           },
         ];
 
+        const modelsToTry = ["gemini-3.6-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
         let aiResponse: any = null;
-        try {
-          aiResponse = await ai.models.generateContent({
-            model: "gemini-2.0-flash",
-            contents: contents,
-            config: {
-              responseMimeType: "application/json",
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  universityName: { type: Type.STRING },
-                  department: { type: Type.STRING },
-                  batch: { type: Type.STRING },
-                  semester: { type: Type.STRING },
-                  students: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        enrollment: { type: Type.STRING },
-                        name: { type: Type.STRING },
-                        cgpa: { type: Type.NUMBER },
-                        sgpa: { type: Type.NUMBER },
-                        result: { type: Type.STRING },
-                        subjects: {
-                          type: Type.ARRAY,
-                          items: {
-                            type: Type.OBJECT,
-                            properties: {
-                              code: { type: Type.STRING },
-                              name: { type: Type.STRING },
-                              grade: { type: Type.STRING },
+
+        for (const modelName of modelsToTry) {
+          try {
+            aiResponse = await ai.models.generateContent({
+              model: modelName,
+              contents: contents,
+              config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                  type: Type.OBJECT,
+                  properties: {
+                    universityName: { type: Type.STRING },
+                    department: { type: Type.STRING },
+                    batch: { type: Type.STRING },
+                    semester: { type: Type.STRING },
+                    students: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          enrollment: { type: Type.STRING },
+                          name: { type: Type.STRING },
+                          cgpa: { type: Type.NUMBER },
+                          sgpa: { type: Type.NUMBER },
+                          result: { type: Type.STRING },
+                          subjects: {
+                            type: Type.ARRAY,
+                            items: {
+                              type: Type.OBJECT,
+                              properties: {
+                                code: { type: Type.STRING },
+                                name: { type: Type.STRING },
+                                grade: { type: Type.STRING },
+                              },
+                              required: ["code", "name", "grade"],
                             },
-                            required: ["code", "name", "grade"],
                           },
                         },
+                        required: ["enrollment", "name", "cgpa", "result", "subjects"],
                       },
-                      required: ["enrollment", "name", "cgpa", "result", "subjects"],
                     },
                   },
+                  required: ["students"],
                 },
-                required: ["students"],
               },
-            },
-          });
-        } catch (primaryErr) {
-          console.warn("gemini-2.0-flash attempt notice, trying gemini-1.5-flash fallback:", primaryErr);
-          aiResponse = await ai.models.generateContent({
-            model: "gemini-1.5-flash",
-            contents: contents,
-            config: {
-              responseMimeType: "application/json",
-            },
-          });
+            });
+
+            if (aiResponse && aiResponse.text) break;
+          } catch (mErr) {
+            console.warn(`Model ${modelName} attempt notice:`, mErr);
+          }
         }
 
         const jsonText = aiResponse?.text?.trim() || "{}";
