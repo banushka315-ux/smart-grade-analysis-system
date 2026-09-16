@@ -1,15 +1,14 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import pdfParse from "pdf-parse";
+import { parseResultText } from "../src/lib/pdfParser";
+
 const parsePdfBuffer = async (buffer: Buffer) => {
   const fn: any = typeof pdfParse === 'function' ? pdfParse : (pdfParse as any).default;
   if (typeof fn === 'function') {
     return await fn(buffer);
   }
-  throw new Error("pdf-parse is not executable");
+  throw new Error("pdf-parse library execution error.");
 };
-
-import { parseResultText } from "../src/lib/pdfParser";
-import { runTesseractOCR } from "../src/lib/ocrService";
 
 export const config = {
   api: {
@@ -86,7 +85,6 @@ export default async function handler(req: any, res: any) {
     let parsedStudents: any[] = [];
     let methodUsed = "regex";
     let ocrAttempted = false;
-    let ocrConfidence = 0;
 
     // 1. Try Gemini Multimodal OCR / Document AI Engine if API key present
     const apiKey = process.env.GEMINI_API_KEY;
@@ -139,7 +137,7 @@ ${!isScanned && extractedText ? `Pre-extracted Text Context:\n${extractedText.sl
           },
         ];
 
-        const modelsToTry = ["gemini-3.6-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
+        const modelsToTry = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash", "gemini-3.6-flash"];
         let aiResponse: any = null;
 
         for (const modelName of modelsToTry) {
@@ -248,21 +246,8 @@ ${!isScanned && extractedText ? `Pre-extracted Text Context:\n${extractedText.sl
       }
     }
 
-    // 2. Tesseract.js OCR Engine Fallback for scanned image buffers
-    if (mimeType.startsWith("image/")) {
-      try {
-        ocrAttempted = true;
-        const ocrRes = await runTesseractOCR(fileBuffer);
-        if (ocrRes.success && ocrRes.text) {
-          extractedText = ocrRes.text;
-          ocrConfidence = ocrRes.confidence || 0;
-          parsedStudents = parseResultText(extractedText);
-          methodUsed = "tesseract-ocr";
-        }
-      } catch (ocrErr) {
-        console.error("Tesseract.js OCR error:", ocrErr);
-      }
-    } else {
+    // 2. Native Text PDF Parse Fallback
+    if (extractedText.trim().length > 0) {
       parsedStudents = parseResultText(extractedText);
     }
 
@@ -272,8 +257,8 @@ ${!isScanned && extractedText ? `Pre-extracted Text Context:\n${extractedText.sl
         isScanned,
         ocrAttempted,
         error: isScanned
-          ? "Optical Character Recognition (OCR) failed to detect legible student records in the scanned document. Please ensure the scan is clear, unblurred, and has adequate contrast."
-          : "Could not automatically parse student records from the PDF. Please verify that the PDF contains valid result tables.",
+          ? "This document appears to be a scanned image or photo PDF. Please configure GEMINI_API_KEY in your Vercel Environment Variables for AI Multimodal OCR."
+          : "Could not automatically extract student records from the PDF. Please ensure the PDF contains valid result tables or try uploading as a CSV/Excel file.",
         rawTextSnippet: extractedText.slice(0, 1000),
       });
     }
@@ -283,7 +268,6 @@ ${!isScanned && extractedText ? `Pre-extracted Text Context:\n${extractedText.sl
       method: methodUsed,
       isScanned,
       ocrAttempted,
-      ocrConfidence,
       universityName: "University Examination Board",
       department: "Academic Results",
       batch: "2022-2026",
@@ -292,10 +276,10 @@ ${!isScanned && extractedText ? `Pre-extracted Text Context:\n${extractedText.sl
       rawTextSnippet: extractedText.slice(0, 500),
     });
   } catch (error: any) {
-    console.error("PDF/OCR Serverless Processing Error:", error);
-    return res.status(500).json({
+    console.error("PDF Parsing Handler Notice:", error);
+    return res.status(422).json({
       success: false,
-      error: error.message || "Failed to process document via serverless OCR pipeline.",
+      error: error.message || "Could not process document format. Please check file readability.",
     });
   }
 }
