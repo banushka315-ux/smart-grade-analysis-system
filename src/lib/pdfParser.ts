@@ -1,6 +1,65 @@
 import { StudentResult, SubjectGrade } from '../types';
 
 /**
+ * Client-side text extractor for native text PDF ArrayBuffers.
+ * Extracts text stream tokens directly in the browser without server calls.
+ */
+export function extractPdfTextFromBuffer(buffer: ArrayBuffer): string {
+  try {
+    const bytes = new Uint8Array(buffer);
+    let str = '';
+    const chunkSize = 8192;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      str += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunkSize)));
+    }
+
+    const textPieces: string[] = [];
+
+    // Extract text from (text) Tj and [(text1)(text2)] TJ blocks
+    const tjRegex = /\(([^)]+)\)\s*T[jJ]/g;
+    let match;
+    while ((match = tjRegex.exec(str)) !== null) {
+      const cleaned = match[1]
+        .replace(/\\\(/g, '(')
+        .replace(/\\\)/g, ')')
+        .replace(/\\n/g, '\n')
+        .replace(/\\r/g, '\r')
+        .replace(/\\t/g, '\t');
+      if (cleaned.trim().length > 0) {
+        textPieces.push(cleaned);
+      }
+    }
+
+    // Extract text from [(...) (...) ] TJ array blocks
+    const arrayTjRegex = /\[\s*((?:\([^)]*\)\s*[-+]?\d*\s*)+)\]\s*TJ/gi;
+    while ((match = arrayTjRegex.exec(str)) !== null) {
+      const inner = match[1];
+      const innerTjRegex = /\(([^)]+)\)/g;
+      let innerMatch;
+      let linePiece = '';
+      while ((innerMatch = innerTjRegex.exec(inner)) !== null) {
+        linePiece += innerMatch[1];
+      }
+      if (linePiece.trim().length > 0) {
+        textPieces.push(linePiece);
+      }
+    }
+
+    if (textPieces.length > 0) {
+      return textPieces.join('\n');
+    }
+
+    // Fallback ASCII stream extraction
+    const cleanAscii = str.replace(/[^\x20-\x7E\n\r\t]/g, ' ');
+    const candidateLines = cleanAscii.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 5);
+    return candidateLines.join('\n');
+  } catch (err) {
+    console.warn('Client PDF text extraction notice:', err);
+    return '';
+  }
+}
+
+/**
  * Heuristic & tabular parser for university result text extracted from PDF documents.
  * Accurately extracts exact Student Roll/Enrollment Numbers, Full Names, Subject Codes,
  * awarded Grades, and SGPA/CGPA without inserting fake hardcoded fallback data.

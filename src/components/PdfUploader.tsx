@@ -4,7 +4,7 @@ import { UniversityDataset } from '../types';
 import { SAMPLE_DATASETS } from '../data/sampleDatasets';
 import { generateSampleResultPDF } from '../lib/exportUtils';
 import { runTesseractOCR } from '../lib/ocrService';
-import { parseResultText } from '../lib/pdfParser';
+import { parseResultText, extractPdfTextFromBuffer } from '../lib/pdfParser';
 import { parseSpreadsheetData } from '../lib/fileParser';
 
 interface PdfUploaderProps {
@@ -74,7 +74,42 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({ onDatasetLoaded, allDa
       return;
     }
 
-    // 2. Handle PDF & Scanned Image Uploads
+    // 2. Handle PDF Files: Try Client-Side Extraction First
+    if (isPdf) {
+      setParseLog('Extracting PDF text client-side...');
+      try {
+        const fileBuffer = await file.arrayBuffer();
+        const extractedText = extractPdfTextFromBuffer(fileBuffer);
+
+        if (extractedText && extractedText.trim().length > 0) {
+          const parsedStudents = parseResultText(extractedText);
+          if (parsedStudents && parsedStudents.length > 0) {
+            const newDataset: UniversityDataset = {
+              id: `pdf-${Date.now()}`,
+              title: `${file.name.replace(/\.[^/.]+$/, '')} Analysis`,
+              universityName: 'University Examination Gazette',
+              department: 'Department Result',
+              batch: '2022-2026',
+              semester: 'Semester VI',
+              academicYear: '2025-2026',
+              uploadDate: new Date().toISOString().split('T')[0],
+              students: parsedStudents,
+              fileName: file.name
+            };
+
+            setParseLog(`Extracted ${parsedStudents.length} student records using Instant Client PDF Engine.`);
+            onDatasetLoaded(newDataset);
+            setUploadStatus(`Extraction Complete! Loaded ${parsedStudents.length} students.`);
+            setLoading(false);
+            return;
+          }
+        }
+      } catch (clientPdfErr) {
+        console.warn('Client PDF parse notice:', clientPdfErr);
+      }
+    }
+
+    // 3. Fallback to AI Cloud OCR & Multimodal Server API for Image / Scanned PDFs
     setParseLog('Initializing PDF & OCR extraction pipeline...');
 
     try {
