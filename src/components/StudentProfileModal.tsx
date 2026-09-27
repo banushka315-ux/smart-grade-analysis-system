@@ -23,6 +23,7 @@ export const StudentProfileModal: React.FC<StudentProfileModalProps> = ({ studen
   if (!student) return null;
 
   const isPass = student.result.toUpperCase() === 'PASS';
+  const isFail = student.result.toUpperCase() === 'FAIL';
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -40,7 +41,9 @@ export const StudentProfileModal: React.FC<StudentProfileModalProps> = ({ studen
                   className={`px-2.5 py-0.5 text-xs font-bold rounded-full border ${
                     isPass
                       ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                      : 'bg-rose-500/20 text-rose-400 border-rose-500/30'
+                      : isFail
+                        ? 'bg-rose-500/20 text-rose-400 border-rose-500/30'
+                        : 'bg-slate-700/50 text-slate-300 border-slate-600'
                   }`}
                 >
                   {student.result}
@@ -50,7 +53,7 @@ export const StudentProfileModal: React.FC<StudentProfileModalProps> = ({ studen
                 Enrollment No: <strong className="text-slate-200">{student.enrollment}</strong>
               </p>
               <p className="text-xs text-slate-400 mt-0.5">
-                {student.branch || 'Computer Science'} • Semester {student.semester || 'VI'}
+                {student.branch || 'Not provided'} • Semester {student.semester || 'Not provided'}
               </p>
             </div>
           </div>

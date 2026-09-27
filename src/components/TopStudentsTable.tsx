@@ -133,14 +133,16 @@ export const TopStudentsTable: React.FC<TopStudentsTableProps> = ({
                       className={`px-2 py-0.5 text-[10px] font-bold rounded-md flex items-center gap-1 w-fit ${
                         st.result.toUpperCase() === 'PASS'
                           ? 'bg-emerald-500/20 text-emerald-400'
-                          : 'bg-rose-500/20 text-rose-400'
+                          : st.result.toUpperCase() === 'FAIL'
+                            ? 'bg-rose-500/20 text-rose-400'
+                            : 'bg-slate-700/50 text-slate-300'
                       }`}
                     >
                       {st.result.toUpperCase() === 'PASS' ? (
                         <CheckCircle2 className="w-3 h-3" />
-                      ) : (
+                      ) : st.result.toUpperCase() === 'FAIL' ? (
                         <XCircle className="w-3 h-3" />
-                      )}
+                      ) : null}
                       {st.result}
                     </span>
                   </td>

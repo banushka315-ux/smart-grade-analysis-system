@@ -1,6 +1,7 @@
 import { StudentResult, SubjectAnalysis, OverallSummary, FilterOptions } from '../types';
 
 export const GRADE_POINTS: Record<string, number> = {
+  'O': 10,
   'A+': 10,
   'A': 9,
   'B+': 8,
@@ -8,6 +9,7 @@ export const GRADE_POINTS: Record<string, number> = {
   'C+': 6,
   'C': 5,
   'D': 4,
+  'P': 4,
   'F': 0,
   'ABS': 0
 };
@@ -31,9 +33,10 @@ export function computeOverallSummary(students: StudentResult[]): OverallSummary
 
   const totalStudents = students.length;
   const passCount = students.filter(s => s.result.toUpperCase() === 'PASS').length;
-  const failCount = totalStudents - passCount;
-  const passPct = Number(((passCount / totalStudents) * 100).toFixed(1));
-  const failPct = Number(((failCount / totalStudents) * 100).toFixed(1));
+  const failCount = students.filter(s => s.result.toUpperCase() === 'FAIL').length;
+  const decidedCount = passCount + failCount;
+  const passPct = decidedCount ? Number(((passCount / decidedCount) * 100).toFixed(1)) : 0;
+  const failPct = decidedCount ? Number(((failCount / decidedCount) * 100).toFixed(1)) : 0;
 
   const cgpas = students.map(s => Number(s.cgpa) || 0).filter(c => c > 0);
   const avgCgpa = cgpas.length > 0 
@@ -93,12 +96,12 @@ export function computeSubjectAnalyses(students: StudentResult[]): SubjectAnalys
 
       const item = subjectMap.get(key)!;
       item.total += 1;
-      const g = (sub.grade || 'F').toUpperCase().trim();
-      item.grades.push(g);
+      const g = (sub.grade || '').toUpperCase().trim();
+      if (['O', 'A+', 'A', 'B+', 'B', 'C+', 'C', 'D', 'P', 'F', 'ABS'].includes(g)) item.grades.push(g);
 
       if (g === 'F' || g === 'ABS' || g === 'FAIL') {
         item.fail += 1;
-      } else {
+      } else if (g && g !== 'UNKNOWN') {
         item.pass += 1;
       }
     });
@@ -121,26 +124,25 @@ export function computeSubjectAnalyses(students: StudentResult[]): SubjectAnalys
         distribution[g] += 1;
       } else if (g === 'ABS') {
         distribution['F'] += 1;
-      } else {
-        // default unknown grade to B if not matching
-        distribution['B'] = (distribution['B'] || 0) + 1;
       }
 
-      totalPoints += GRADE_POINTS[g] ?? 6;
+      totalPoints += GRADE_POINTS[g] ?? 0;
     });
 
+    const gradedCount = item.grades.length;
     ALL_GRADES.forEach(g => {
-      percentages[g] = item.total > 0 
-        ? Number(((distribution[g] / item.total) * 100).toFixed(1)) 
+      percentages[g] = gradedCount > 0
+        ? Number(((distribution[g] / gradedCount) * 100).toFixed(1))
         : 0;
     });
 
-    const passPct = item.total > 0 
-      ? Number(((item.pass / item.total) * 100).toFixed(1)) 
+    const decidedCount = item.pass + item.fail;
+    const passPct = decidedCount > 0
+      ? Number(((item.pass / decidedCount) * 100).toFixed(1))
       : 0;
 
-    const avgGP = item.total > 0 
-      ? Number((totalPoints / item.total).toFixed(2)) 
+    const avgGP = gradedCount > 0
+      ? Number((totalPoints / gradedCount).toFixed(2))
       : 0;
 
     resultList.push({

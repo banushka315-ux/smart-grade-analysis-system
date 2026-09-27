@@ -10,7 +10,7 @@ export interface SubjectGrade {
 export interface StudentResult {
   enrollment: string;
   name: string;
-  cgpa: number;
+  cgpa?: number;
   sgpa?: number;
   result: 'PASS' | 'FAIL' | 'PROMOTED' | 'DETAINED' | string;
   semester?: string | number;

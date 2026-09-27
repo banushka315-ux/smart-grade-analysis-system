@@ -3,13 +3,14 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenAI, Type } from "@google/genai";
-import pdfParse from "pdf-parse";
+import { PDFParse } from "pdf-parse";
 const parsePdfBuffer = async (buffer: Buffer) => {
-  const fn: any = typeof pdfParse === 'function' ? pdfParse : (pdfParse as any).default;
-  if (typeof fn === 'function') {
-    return await fn(buffer);
+  const parser = new PDFParse({ data: buffer });
+  try {
+    return await parser.getText();
+  } finally {
+    await parser.destroy();
   }
-  throw new Error("pdf-parse is not executable");
 };
 
 import { createServer as createViteServer } from "vite";

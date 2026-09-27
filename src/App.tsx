@@ -19,13 +19,24 @@ import { StudentProfileModal } from './components/StudentProfileModal';
 import { ExportReports } from './components/ExportReports';
 
 import { UniversityDataset, StudentResult } from './types';
-import { SAMPLE_DATASETS } from './data/sampleDatasets';
 import { computeOverallSummary, computeSubjectAnalyses, getTopStudents, getLowestStudents } from './lib/analytics';
 import { exportToPDFReport, exportToExcel } from './lib/exportUtils';
 
+const EMPTY_DATASET: UniversityDataset = {
+  id: 'empty',
+  title: 'No uploaded results',
+  universityName: 'Not provided',
+  department: 'Not provided',
+  batch: 'Not provided',
+  semester: 'Not provided',
+  academicYear: 'Not provided',
+  uploadDate: '',
+  students: [],
+};
+
 export default function App() {
-  const [allDatasets, setAllDatasets] = useState<UniversityDataset[]>(SAMPLE_DATASETS);
-  const [currentDataset, setCurrentDataset] = useState<UniversityDataset>(SAMPLE_DATASETS[0]);
+  const [allDatasets, setAllDatasets] = useState<UniversityDataset[]>([]);
+  const [currentDataset, setCurrentDataset] = useState<UniversityDataset>(EMPTY_DATASET);
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [selectedStudent, setSelectedStudent] = useState<StudentResult | null>(null);
   const [darkMode, setDarkMode] = useState<boolean>(true);

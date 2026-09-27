@@ -76,7 +76,7 @@ export function parseResultText(rawText: string): StudentResult[] {
   const enrollRegex = /(?:Enrollment|Roll|Reg|ENR|ID|Seat|Candidate|RollNo)[\s#:]*([A-Za-z0-9/\-]{3,20})/i;
   const genericEnrollRegex = /\b([0-9]{3,16}|[0-9]{2,4}[-/\s]?[A-Za-z]{2,5}[-/\s]?[0-9]{3,8})\b/;
   const explicitNameRegex = /(?:Student\s*Name|Name\s*of\s*Student|Candidate\s*Name|Name|Student)[\s:]+([A-Za-z\s.]{3,40})/i;
-  const cgpaRegex = /(?:CGPA|SGPA|GPA|SPI|CPI|Percentage|Marks)[\s:]*([0-9]{1,2}\.[0-9]{1,2}|10\.00?|[0-9]{2,3})/i;
+  const cgpaRegex = /\b(CGPA|SGPA|GPA|SPI|CPI)\b[\s:]*([0-9]+(?:\.[0-9]{1,2})?)/i;
   const resultRegex = /\b(PASS|FAIL|PROMOTED|DETAINED|PASSED|FAILED|RE-APPEAR|BACKLOG|ABSENT)\b/i;
 
   // Grade matcher
@@ -108,7 +108,7 @@ export function parseResultText(rawText: string): StudentResult[] {
 
       // Check if this is a new student record
       if (!currentStudent || currentStudent.enrollment !== enrollVal) {
-        if (currentStudent && currentStudent.enrollment && (currentStudent.subjects?.length || 0) > 0) {
+        if (currentStudent?.enrollment && currentStudent.name && (currentStudent.subjects?.length || 0) > 0) {
           students.push(finalizeStudent(currentStudent));
         }
 
@@ -128,7 +128,7 @@ export function parseResultText(rawText: string): StudentResult[] {
 
         currentStudent = {
           enrollment: enrollVal,
-          name: extractedName || `Student (${enrollVal})`,
+          name: extractedName,
           subjects: []
         };
       }
@@ -137,7 +137,7 @@ export function parseResultText(rawText: string): StudentResult[] {
     if (!currentStudent) continue;
 
     // Check for explicit student name on subsequent lines if not yet found
-    if ((!currentStudent.name || currentStudent.name.startsWith('Student (')) && i < rawLines.length) {
+    if (!currentStudent.name && i < rawLines.length) {
       const nameMatch = line.match(explicitNameRegex);
       if (nameMatch && nameMatch[1].trim().length > 2) {
         currentStudent.name = cleanName(nameMatch[1]);
@@ -155,13 +155,10 @@ export function parseResultText(rawText: string): StudentResult[] {
     // CGPA / SGPA match
     const cgpaMatch = line.match(cgpaRegex);
     if (cgpaMatch) {
-      const val = parseFloat(cgpaMatch[1]);
+      const val = parseFloat(cgpaMatch[2]);
       if (!isNaN(val)) {
-        const normVal = val > 10 && val <= 100 ? Number((val / 10).toFixed(2)) : Number(val.toFixed(2));
-        if (normVal <= 10.0) {
-          currentStudent.cgpa = normVal;
-          currentStudent.sgpa = normVal;
-        }
+        if (cgpaMatch[1].toUpperCase() === 'SGPA') currentStudent.sgpa = val;
+        else currentStudent.cgpa = val;
       }
     }
 
@@ -180,7 +177,8 @@ export function parseResultText(rawText: string): StudentResult[] {
       const rawSubName = subMatch[2] ? subMatch[2].trim() : '';
       const gradeRaw = subMatch[3].toUpperCase();
 
-      const grade = normalizeGrade(gradeRaw);
+      const numericMarks = /^\d{2,3}$/.test(gradeRaw) ? Number(gradeRaw) : undefined;
+      const grade = numericMarks === undefined ? normalizeGrade(gradeRaw) : '';
       const subName = (rawSubName && rawSubName.length > 2 && !gradeTokens.includes(rawSubName.toUpperCase())) ? rawSubName : code;
 
       if (!currentStudent.subjects) currentStudent.subjects = [];
@@ -188,7 +186,8 @@ export function parseResultText(rawText: string): StudentResult[] {
         currentStudent.subjects.push({
           code,
           name: subName,
-          grade
+          grade,
+          ...(numericMarks === undefined ? {} : { marks: numericMarks })
         });
       }
     }
@@ -201,14 +200,17 @@ export function parseResultText(rawText: string): StudentResult[] {
       if (matchedGradesInLine.length >= 2) {
         for (let idx = 0; idx < Math.min(matchedGradesInLine.length, detectedSubjectCodes.length); idx++) {
           const code = detectedSubjectCodes[idx];
-          const grade = normalizeGrade(matchedGradesInLine[idx]);
+          const rawGrade = matchedGradesInLine[idx];
+          const numericMarks = /^\d+(?:\.\d+)?$/.test(rawGrade) ? Number(rawGrade) : undefined;
+          const grade = numericMarks === undefined ? normalizeGrade(rawGrade) : '';
 
           if (!currentStudent.subjects) currentStudent.subjects = [];
           if (!currentStudent.subjects.some(s => s.code === code)) {
             currentStudent.subjects.push({
               code,
               name: code,
-              grade
+              grade,
+              ...(numericMarks === undefined ? {} : { marks: numericMarks })
             });
           }
         }
@@ -217,7 +219,7 @@ export function parseResultText(rawText: string): StudentResult[] {
   }
 
   // Finalize last student
-  if (currentStudent && currentStudent.enrollment && (currentStudent.subjects?.length || 0) > 0) {
+  if (currentStudent?.enrollment && currentStudent.name && (currentStudent.subjects?.length || 0) > 0) {
     students.push(finalizeStudent(currentStudent));
   }
 
@@ -243,29 +245,17 @@ function finalizeStudent(st: Partial<StudentResult>): StudentResult {
 
   // Calculate pass/fail based on actual subjects
   const hasFail = subjects.some(s => s.grade === 'F' || s.grade === 'ABS' || s.grade === 'FAIL');
-  const result = st.result || (hasFail ? 'FAIL' : 'PASS');
-
-  // Calculate exact SGPA/CGPA dynamically from student's actual grades if missing
-  let cgpa = st.cgpa || 0;
-  if (!st.cgpa || st.cgpa === 0) {
-    if (subjects.length > 0) {
-      const pointsMap: Record<string, number> = { 'O': 10, 'A+': 10, 'A': 9, 'B+': 8, 'B': 7, 'C+': 6, 'C': 5, 'D': 4, 'P': 4, 'F': 0, 'ABS': 0 };
-      const totalPoints = subjects.reduce((acc, s) => acc + (pointsMap[s.grade] ?? 6), 0);
-      cgpa = Number((totalPoints / subjects.length).toFixed(2));
-    }
-  }
-
-  const enrollment = st.enrollment || 'STUDENT';
-  const name = st.name || `Student (${enrollment})`;
+  const hasGrade = subjects.some(subject => ['O', 'A+', 'A', 'B+', 'B', 'C+', 'C', 'D', 'P'].includes(subject.grade.toUpperCase()));
+  const result = st.result || (hasFail ? 'FAIL' : hasGrade ? 'PASS' : 'UNKNOWN');
 
   return {
-    enrollment: enrollment.toUpperCase(),
-    name,
-    cgpa: Number(cgpa.toFixed(2)),
-    sgpa: Number(cgpa.toFixed(2)),
+    enrollment: st.enrollment!.toUpperCase(),
+    name: st.name!,
+    cgpa: st.cgpa,
+    sgpa: st.sgpa,
     result,
-    semester: st.semester || "VI",
-    branch: st.branch || "General Academic",
+    semester: st.semester,
+    branch: st.branch,
     subjects
   };
 }

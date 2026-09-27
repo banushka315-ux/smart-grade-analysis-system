@@ -1,11 +1,9 @@
 import React, { useState } from 'react';
-import { Upload, FileText, CheckCircle2, AlertTriangle, Sparkles, Download, RefreshCw, Cpu, Scan, Table } from 'lucide-react';
+import { Upload, FileText, CheckCircle2, AlertTriangle, RefreshCw, Scan } from 'lucide-react';
 import { UniversityDataset } from '../types';
-import { SAMPLE_DATASETS } from '../data/sampleDatasets';
-import { generateSampleResultPDF } from '../lib/exportUtils';
 import { runTesseractOCR } from '../lib/ocrService';
 import { parseResultText, extractPdfTextFromBuffer } from '../lib/pdfParser';
-import { parseSpreadsheetData } from '../lib/fileParser';
+import { parseTabularFile } from '../lib/tabularParser';
 
 interface PdfUploaderProps {
   onDatasetLoaded: (dataset: UniversityDataset) => void;
@@ -24,12 +22,12 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({ onDatasetLoaded, allDa
     if (!file) return;
 
     const lowerName = file.name.toLowerCase();
-    const isSpreadsheet = lowerName.endsWith('.csv') || lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls') || file.type.includes('csv') || file.type.includes('spreadsheet') || file.type.includes('excel');
+    const isSpreadsheet = lowerName.endsWith('.csv') || lowerName.endsWith('.xlsx') || file.type.includes('csv') || file.type.includes('spreadsheet') || file.type.includes('excel');
     const isPdf = file.type.includes('pdf') || lowerName.endsWith('.pdf');
-    const isImage = file.type.startsWith('image/') || /\.(png|jpe?g|webp|bmp)$/i.test(lowerName);
+    const isImage = ['image/png', 'image/jpeg'].includes(file.type) || /\.(png|jpe?g)$/i.test(lowerName);
 
     if (!isSpreadsheet && !isPdf && !isImage) {
-      setErrorMessage('Please upload a valid result document (.pdf, .csv, .xlsx, .xls) or scanned image (.png, .jpg, .webp).');
+      setErrorMessage('Please upload a result document (.pdf, .csv, .xlsx) or scanned image (.png, .jpg, .jpeg).');
       return;
     }
 
@@ -42,32 +40,29 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({ onDatasetLoaded, allDa
     if (isSpreadsheet) {
       setParseLog('Parsing spreadsheet table structure...');
       try {
-        const arrayBuffer = await file.arrayBuffer();
-        const parsed = parseSpreadsheetData(arrayBuffer);
+        const students = await parseTabularFile(file);
 
-        if (parsed.students && parsed.students.length > 0) {
+        if (students.length > 0) {
           const newDataset: UniversityDataset = {
             id: `spreadsheet-${Date.now()}`,
             title: `${file.name.replace(/\.[^/.]+$/, '')} Analysis`,
-            universityName: parsed.universityName || 'Uploaded Result Dataset',
-            department: parsed.department || 'Academic Results',
-            batch: parsed.batch || '2022-2026',
-            semester: parsed.semester || 'Semester VI',
-            academicYear: '2025-2026',
+            universityName: 'Not provided',
+            department: 'Not provided',
+            batch: 'Not provided',
+            semester: 'Not provided',
+            academicYear: 'Not provided',
             uploadDate: new Date().toISOString().split('T')[0],
-            students: parsed.students,
+            students,
             fileName: file.name
           };
 
-          setParseLog(`Successfully extracted ${parsed.students.length} student records from spreadsheet.`);
+          setParseLog(`Successfully extracted ${students.length} student records from spreadsheet.`);
           onDatasetLoaded(newDataset);
-          setUploadStatus(`Extraction Complete! Loaded ${parsed.students.length} students.`);
-        } else {
-          setErrorMessage('Could not extract valid student result records from spreadsheet. Please ensure columns include Roll/Enrollment No, Name, and Subject/Grade fields.');
+          setUploadStatus(`Extraction Complete! Loaded ${students.length} students.`);
         }
       } catch (err: any) {
         console.error('Spreadsheet parse error:', err);
-        setErrorMessage('Failed to parse spreadsheet file. Please verify file format.');
+        setErrorMessage(err.message || 'Failed to parse spreadsheet file. Please verify file format.');
       } finally {
         setLoading(false);
       }
@@ -87,11 +82,11 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({ onDatasetLoaded, allDa
             const newDataset: UniversityDataset = {
               id: `pdf-${Date.now()}`,
               title: `${file.name.replace(/\.[^/.]+$/, '')} Analysis`,
-              universityName: 'University Examination Gazette',
-              department: 'Department Result',
-              batch: '2022-2026',
-              semester: 'Semester VI',
-              academicYear: '2025-2026',
+              universityName: 'Not provided',
+              department: 'Not provided',
+              batch: 'Not provided',
+              semester: 'Not provided',
+              academicYear: 'Not provided',
               uploadDate: new Date().toISOString().split('T')[0],
               students: parsedStudents,
               fileName: file.name
@@ -128,7 +123,7 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({ onDatasetLoaded, allDa
             body: JSON.stringify({
               base64Data,
               fileName: file.name,
-              mimeType: file.type || (isPdf ? 'application/pdf' : 'image/png')
+              mimeType: isPdf ? 'application/pdf' : lowerName.endsWith('.png') ? 'image/png' : 'image/jpeg'
             })
           });
 
@@ -140,37 +135,31 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({ onDatasetLoaded, allDa
 
           if (response.ok && data && data.success && Array.isArray(data.students) && data.students.length > 0) {
             apiSuccess = true;
-            if (data.isScanned || data.ocrAttempted) {
-              setIsOcrActive(true);
-            }
+            if (data.isScanned || data.ocrAttempted) setIsOcrActive(true);
             const methodLabel = data.method === 'gemini-ocr-multimodal'
               ? 'Gemini Multimodal OCR Vision Engine'
               : data.method === 'tesseract-ocr'
-              ? 'Tesseract.js OCR Engine'
-              : data.method === 'gemini-ai'
-              ? 'Gemini AI Parser'
-              : 'Regex Heuristic Parser';
-
+                ? 'Tesseract.js OCR Engine'
+                : data.method === 'gemini-ai' ? 'Gemini AI Parser' : 'Regex Heuristic Parser';
             setParseLog(`Extracted ${data.students.length} student records using ${methodLabel}.${data.isScanned ? ' (Scanned Document OCR)' : ''}`);
 
             const newDataset: UniversityDataset = {
               id: `pdf-${Date.now()}`,
               title: `${file.name.replace(/\.[^/.]+$/, '')} Analysis`,
-              universityName: data.universityName || 'University Examination Gazette',
-              department: data.department || 'Department Result',
-              batch: data.batch || '2022-2026',
-              semester: data.semester || 'Semester VI',
-              academicYear: '2025-2026',
+              universityName: data.universityName || 'Not provided',
+              department: data.department || 'Not provided',
+              batch: data.batch || 'Not provided',
+              semester: data.semester || 'Not provided',
+              academicYear: 'Not provided',
               uploadDate: new Date().toISOString().split('T')[0],
               students: data.students,
               fileName: file.name
             };
-
             onDatasetLoaded(newDataset);
             setUploadStatus(`Extraction Complete! Loaded ${data.students.length} students.`);
             setLoading(false);
             return;
-          } else if (data && data.error) {
+          } else if (data && data.error && !isImage) {
             setErrorMessage(data.error);
             setLoading(false);
             return;
@@ -193,11 +182,11 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({ onDatasetLoaded, allDa
                 const newDataset: UniversityDataset = {
                   id: `image-${Date.now()}`,
                   title: `${file.name.replace(/\.[^/.]+$/, '')} Analysis`,
-                  universityName: 'Scanned Result Gazette',
-                  department: 'Department Result',
-                  batch: '2022-2026',
-                  semester: 'Semester VI',
-                  academicYear: '2025-2026',
+                  universityName: 'Not provided',
+                  department: 'Not provided',
+                  batch: 'Not provided',
+                  semester: 'Not provided',
+                  academicYear: 'Not provided',
                   uploadDate: new Date().toISOString().split('T')[0],
                   students: parsedStudents,
                   fileName: file.name
@@ -289,14 +278,6 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({ onDatasetLoaded, allDa
               />
             </label>
 
-            <button
-              onClick={() => generateSampleResultPDF(SAMPLE_DATASETS[0])}
-              className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium rounded-xl transition-all inline-flex items-center gap-2"
-              title="Download a sample University Result PDF to test uploading!"
-            >
-              <Download className="w-4 h-4 text-emerald-400" />
-              Download Sample PDF to Test
-            </button>
           </div>
 
           {/* Status & Loader */}
@@ -335,40 +316,6 @@ export const PdfUploader: React.FC<PdfUploaderProps> = ({ onDatasetLoaded, allDa
         </div>
       </div>
 
-      {/* Preset Dataset Picker Cards */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-bold text-slate-200 flex items-center gap-2">
-            <Cpu className="w-4 h-4 text-indigo-400" /> Pre-loaded Sample Datasets (Instant Preview)
-          </h3>
-          <span className="text-xs text-slate-400">Click any preset to load analysis instantly</span>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {SAMPLE_DATASETS.map((ds) => (
-            <div
-              key={ds.id}
-              onClick={() => onDatasetLoaded(ds)}
-              className="p-4 bg-slate-900 border border-slate-800 hover:border-indigo-500/50 rounded-2xl cursor-pointer transition-all hover:bg-slate-800/80 group flex items-start justify-between"
-            >
-              <div className="space-y-1">
-                <span className="px-2 py-0.5 text-[10px] font-bold bg-indigo-500/20 text-indigo-300 rounded-full border border-indigo-500/30">
-                  {ds.semester}
-                </span>
-                <h4 className="text-sm font-bold text-slate-100 group-hover:text-indigo-300 transition-colors">
-                  {ds.title}
-                </h4>
-                <p className="text-xs text-slate-400">{ds.universityName}</p>
-                <div className="pt-2 text-[11px] text-slate-400 flex items-center gap-3">
-                  <span>🎓 {ds.students.length} Students</span>
-                  <span>📚 {ds.students[0]?.subjects.length || 0} Subjects</span>
-                </div>
-              </div>
-              <Sparkles className="w-5 h-5 text-slate-600 group-hover:text-amber-400 transition-colors" />
-            </div>
-          ))}
-        </div>
-      </div>
     </div>
   );
 };
